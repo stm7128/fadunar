@@ -1,4 +1,4 @@
-# Fadunar (ファドゥナール)
+# Fadunar
 
 **F**anza **A**nd **D**lsite **UNAR**chiver
 
@@ -40,6 +40,7 @@ npm run tauri build
 ```
 
 ## 🛠️ 使用技術
+
 * **Frontend**: Vanilla HTML / CSS / JavaScript
 * **Backend**: Rust
 * **Framework**: Tauri v2
