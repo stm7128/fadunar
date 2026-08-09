@@ -1,6 +1,9 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+// 右クリックメニュー（Edgeのコンテキストメニュー）を無効化
+document.addEventListener('contextmenu', e => e.preventDefault());
+
 document.addEventListener('DOMContentLoaded', () => {
   const dropZone = document.getElementById('drop-zone');
   const btnSelectFolder = document.getElementById('btn-select-folder');
