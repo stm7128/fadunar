@@ -20,12 +20,14 @@ jobs:
         id: calver
         shell: pwsh
         run: |
-          # Create a valid semver CalVer: YYYY.MDD.RUN_NUMBER (no leading zeros allowed in semver)
-          $year = (Get-Date).Year
+          # Create a valid semver CalVer that respects Windows limits (Major/Minor <= 255, Patch <= 65535)
+          # Format: (Year-2020).(Month).(Day * 1000 + RunNumber)
+          $year = (Get-Date).Year - 2020
           $month = (Get-Date).Month
-          $day = (Get-Date).Day.ToString("00")
-          $monthDay = "$month$day"
-          $version = "$year.$monthDay.$env:GITHUB_RUN_NUMBER"
+          $day = (Get-Date).Day
+          $run = [int]$env:GITHUB_RUN_NUMBER
+          $patch = ($day * 1000) + $run
+          $version = "$year.$month.$patch"
           echo "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: setup node
