@@ -74,3 +74,4 @@ jobs:
           releaseBody: 'Automated release for commit ${{ github.sha }}'
           releaseDraft: false
           prerelease: false
+          uploadPlainBinary: true
