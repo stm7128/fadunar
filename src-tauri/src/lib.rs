@@ -293,6 +293,10 @@ async fn process_zip(app: tauri::AppHandle, file_path_str: String, output_base: 
                 let mut outfile = fs::File::create(&outpath).map_err(|e| e.to_string())?;
                 io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
             }
+            
+            // 重い同期処理でTokioスレッドを占有しないよう、1ファイルごとに非同期ランタイムに処理を譲る
+            // これにより、UIへの進捗イベント送信や、他のZIPの並列解凍がブロックされなくなる
+            tokio::task::yield_now().await;
         }
         
         final_output_path = Some(target_dir.to_string_lossy().into_owned());
