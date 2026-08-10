@@ -294,8 +294,7 @@ async fn process_zip(app: tauri::AppHandle, file_path_str: String, output_base: 
                 io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
             }
             
-            // 重い同期処理でTokioスレッドを占有しないよう、1ファイルごとに非同期ランタイムに処理を譲る
-            // これにより、UIへの進捗イベント送信や、他のZIPの並列解凍がブロックされなくなる
+            // Yield to async runtime to allow UI updates and parallel processing
             tokio::task::yield_now().await;
         }
         

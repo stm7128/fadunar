@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// 右クリックメニュー（Edgeのコンテキストメニュー）を無効化
+// Disable default browser context menu
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 document.addEventListener('DOMContentLoaded', () => {
