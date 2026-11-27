@@ -15,28 +15,49 @@ document.addEventListener('DOMContentLoaded', () => {
   const notifyMinFilesInput = document.getElementById('notify-min-files');
   const notifyMinTimeInput = document.getElementById('notify-min-time');
   const taskQueue = document.getElementById('task-queue');
-  
+
   const queueStatusContainer = document.getElementById('queue-status-container');
   const queueProgressText = document.getElementById('queue-progress-text');
   const progressBarsContainer = document.getElementById('progress-bars-container');
-  
+
   const historyList = document.getElementById('history-list');
-  
+
+  const MAX_HISTORY_ITEMS = 100;
+  const MAX_LOG_ITEMS = 200;
+
   let processQueue = [];
   let activeCount = 0;
   let totalInCurrentBatch = 0;
   let processedInCurrentBatch = 0;
   let batchStartTime = 0;
+  let taskSequence = 0;
+  const activeProgressBars = new Map();
+
+  function clampInt(value, fallback, min, max = Number.MAX_SAFE_INTEGER) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+    return Math.min(max, Math.max(min, parsed));
+  }
+
+  function nextTaskId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    taskSequence += 1;
+    return `task-${Date.now()}-${taskSequence}`;
+  }
 
   // Load saved settings
   const savedFolder = localStorage.getItem('defaultFolder') || '';
   const savedTemplate = localStorage.getItem('namingTemplate') || '$AUTHOR/$TITLE';
-  const savedConcurrency = localStorage.getItem('concurrencyLimit') || '3';
+  const savedConcurrency = String(clampInt(localStorage.getItem('concurrencyLimit'), 3, 1, 20));
   const savedDuplicateAction = localStorage.getItem('duplicateAction') || 'rename';
   const savedDeleteOriginal = localStorage.getItem('deleteOriginal') === 'true';
-  const savedMinFiles = localStorage.getItem('notifyMinFiles') || '3';
-  const savedMinTime = localStorage.getItem('notifyMinTime') || '30';
-  
+  const savedMinFiles = String(clampInt(localStorage.getItem('notifyMinFiles'), 3, 1));
+  const savedMinTime = String(clampInt(localStorage.getItem('notifyMinTime'), 30, 1));
+
   defaultFolderInput.value = savedFolder;
   namingTemplateInput.value = savedTemplate;
   concurrencyLimitInput.value = savedConcurrency;
@@ -50,7 +71,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   concurrencyLimitInput.addEventListener('change', (e) => {
-    localStorage.setItem('concurrencyLimit', e.target.value);
+    const clamped = String(clampInt(e.target.value, 3, 1, 20));
+    e.target.value = clamped;
+    localStorage.setItem('concurrencyLimit', clamped);
   });
 
   duplicateActionInput.addEventListener('change', (e) => {
@@ -62,11 +85,15 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   notifyMinFilesInput.addEventListener('change', (e) => {
-    localStorage.setItem('notifyMinFiles', e.target.value);
+    const clamped = String(clampInt(e.target.value, 3, 1));
+    e.target.value = clamped;
+    localStorage.setItem('notifyMinFiles', clamped);
   });
 
   notifyMinTimeInput.addEventListener('change', (e) => {
-    localStorage.setItem('notifyMinTime', e.target.value);
+    const clamped = String(clampInt(e.target.value, 30, 1));
+    e.target.value = clamped;
+    localStorage.setItem('notifyMinTime', clamped);
   });
 
   const btnResetSettings = document.getElementById('btn-reset-settings');
@@ -94,139 +121,157 @@ document.addEventListener('DOMContentLoaded', () => {
   // Listen to Tauri's native drop event
   listen('tauri://drag-drop', async (event) => {
     dropZone.classList.remove('drag-over');
-    
-    // event.payload contains paths
-    const rawFiles = event.payload.paths || event.payload; 
-    
-    if (rawFiles && rawFiles.length > 0) {
-      const validFiles = [];
-      let ignoredCount = 0;
-      let nonIdCount = 0;
 
-      rawFiles.forEach(f => {
-        if (!f.toLowerCase().endsWith('.zip')) {
-          ignoredCount++;
-          return;
-        }
+    const rawFiles = event.payload.paths || event.payload;
+    if (!rawFiles || rawFiles.length === 0) {
+      return;
+    }
 
-        const fileName = f.split('\\').pop().split('/').pop();
-        // Check for DLSite ID (e.g., RJ12345) or Fanza ID (e.g., d_123, abcd001)
-        const idMatch = fileName.match(/RJ\d+/i) || fileName.match(/d_\d+|[a-z]+[0-9]{3,}/i);
-        
-        if (idMatch) {
-          validFiles.push(f);
-        } else {
-          nonIdCount++;
-        }
+    if (!defaultFolderInput.value.trim()) {
+      addTask('⚠️ デフォルト保存先フォルダを先に選択してください');
+      return;
+    }
+
+    let classification;
+    try {
+      classification = await invoke('classify_dropped_files', { paths: rawFiles });
+    } catch (err) {
+      addTask(`エラー: ファイル判定に失敗しました (${err})`);
+      return;
+    }
+
+    const {
+      valid: validFiles,
+      ignored_non_zip: ignoredCount,
+      ignored_unknown_id: nonIdCount,
+    } = classification;
+
+    if (ignoredCount > 0) {
+      addTask(`⚠️ ${ignoredCount}件のZIP以外のファイルを無視しました`);
+    }
+    if (nonIdCount > 0) {
+      addTask(`⚠️ ${nonIdCount}件の非対応ZIP(ID不明)を無視しました`);
+    }
+
+    if (validFiles.length > 0) {
+      if (totalInCurrentBatch === 0) {
+        batchStartTime = Date.now();
+      }
+
+      addTask(`✅ ${validFiles.length}件のZIPファイルをキューに追加しました`);
+      validFiles.forEach((filePath) => {
+        const fileName = filePath.split('\\').pop().split('/').pop();
+        addTask(`⏳ 待機中: ${fileName}`);
       });
 
-      if (ignoredCount > 0) {
-        addTask(`⚠️ ${ignoredCount}件のZIP以外のファイルを無視しました`);
-      }
-      if (nonIdCount > 0) {
-        addTask(`⚠️ ${nonIdCount}件の非対応ZIP(ID不明)を無視しました`);
-      }
+      processQueue.push(...validFiles);
+      totalInCurrentBatch += validFiles.length;
+      updateQueueUI();
 
-      if (validFiles.length > 0) {
-        if (totalInCurrentBatch === 0) {
-          batchStartTime = Date.now();
-        }
-        
-        addTask(`✅ ${validFiles.length}件のZIPファイルをキューに追加しました`);
-        validFiles.forEach(filePath => {
-          const fileName = filePath.split('\\').pop().split('/').pop();
-          addTask(`⏳ 待機中: ${fileName}`);
-        });
-        
-        // Add to queue
-        processQueue.push(...validFiles);
-        totalInCurrentBatch += validFiles.length;
-        updateQueueUI();
-        
-        // Start processing if not already at limit
-        pumpQueue();
-      }
+      pumpQueue();
     }
   });
-  
+
   function updateQueueUI() {
     if (totalInCurrentBatch > 0) {
       queueStatusContainer.style.display = 'block';
-      queueProgressText.innerText = `${processedInCurrentBatch} / ${totalInCurrentBatch} 解凍済み`;
+      queueProgressText.textContent = `${processedInCurrentBatch} / ${totalInCurrentBatch} 解凍済み`;
     } else {
       queueStatusContainer.style.display = 'none';
     }
   }
-  
+
   async function pumpQueue() {
-    const limit = parseInt(concurrencyLimitInput.value, 10) || 3;
-    
+    const limit = clampInt(concurrencyLimitInput.value, 3, 1, 20);
+
     while (activeCount < limit && processQueue.length > 0) {
       const file = processQueue.shift();
       activeCount++;
       processSingleZip(file);
     }
   }
-  
+
+  function createProgressElement(fileName) {
+    const progressEl = document.createElement('div');
+
+    const header = document.createElement('div');
+    header.className = 'progress-header';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'p-filename progress-filename';
+    nameSpan.textContent = fileName;
+
+    const percentSpan = document.createElement('span');
+    percentSpan.className = 'p-percent';
+    percentSpan.textContent = '0%';
+
+    header.appendChild(nameSpan);
+    header.appendChild(percentSpan);
+
+    const track = document.createElement('div');
+    track.className = 'progress-track';
+
+    const bar = document.createElement('div');
+    bar.className = 'p-bar';
+    track.appendChild(bar);
+
+    progressEl.appendChild(header);
+    progressEl.appendChild(track);
+    return progressEl;
+  }
+
   async function processSingleZip(filePath) {
     const fileName = filePath.split('\\').pop().split('/').pop();
-    const safeId = "progress-" + btoa(unescape(encodeURIComponent(fileName))).replace(/[^a-zA-Z0-9]/g, '');
-    
-    // Create progress bar UI
-    const progressEl = document.createElement('div');
-    progressEl.id = safeId;
-    progressEl.innerHTML = `
-      <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px;">
-        <span class="p-filename" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80%;">${fileName}</span>
-        <span class="p-percent">0%</span>
-      </div>
-      <div style="width: 100%; height: 8px; background: var(--bg-color); border-radius: 4px; overflow: hidden; border: 1px solid var(--border-color);">
-        <div class="p-bar" style="width: 0%; height: 100%; background: var(--accent-color); transition: width 0.1s linear;"></div>
-      </div>
-    `;
+    const taskId = nextTaskId();
+
+    const progressEl = createProgressElement(fileName);
+    activeProgressBars.set(taskId, progressEl);
     progressBarsContainer.appendChild(progressEl);
 
     addTask(`▶️ 解凍開始: ${fileName}`);
 
     try {
-      const result = await invoke('process_zip', { 
-        filePathStr: filePath, 
-        outputBase: defaultFolderInput.value, 
+      const result = await invoke('process_zip', {
+        taskId,
+        filePathStr: filePath,
+        outputBase: defaultFolderInput.value,
         template: namingTemplateInput.value,
         duplicateAction: duplicateActionInput.value,
-        deleteOriginal: deleteOriginalInput.checked
+        deleteOriginal: deleteOriginalInput.checked,
       });
-      
+
       if (result.success) {
         addTask(result.message);
-        
+
         // Add to history
         if (!result.skipped && result.output_path) {
           const historyEmpty = document.getElementById('history-empty');
           if (historyEmpty) {
             historyEmpty.remove();
           }
+
           const historyEl = document.createElement('div');
-          historyEl.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 10px; background: var(--bg-color); border-radius: 6px; border: 1px solid var(--border-color);';
-          
+          historyEl.className = 'history-item';
+
           const infoDiv = document.createElement('div');
-          infoDiv.style.cssText = 'display: flex; flex-direction: column; gap: 4px; max-width: 80%; overflow: hidden;';
-          
+          infoDiv.className = 'history-info';
+
           const titleSpan = document.createElement('span');
-          titleSpan.style.cssText = 'font-size: 14px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+          titleSpan.className = 'history-title';
           titleSpan.title = result.title || 'タイトル不明';
           titleSpan.textContent = result.title || 'タイトル不明';
-          
+
           const fileSpan = document.createElement('span');
-          fileSpan.style.cssText = 'font-size: 11px; color: var(--border-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+          fileSpan.className = 'history-filename';
           fileSpan.title = fileName;
           fileSpan.textContent = fileName;
-          
+
           infoDiv.appendChild(titleSpan);
           infoDiv.appendChild(fileSpan);
-          
+
           const openBtn = document.createElement('button');
-          openBtn.style.cssText = 'padding: 6px 12px; font-size: 12px; cursor: pointer; background: var(--accent-color); color: white; border: none; border-radius: 4px;';
+          openBtn.type = 'button';
+          openBtn.className = 'btn-open-folder';
           openBtn.textContent = 'フォルダを開く';
           openBtn.addEventListener('click', async () => {
             try {
@@ -235,38 +280,43 @@ document.addEventListener('DOMContentLoaded', () => {
               addTask(`フォルダを開けませんでした: ${err}`);
             }
           });
-          
+
           historyEl.appendChild(infoDiv);
           historyEl.appendChild(openBtn);
-          
-          historyList.prepend(historyEl); // Add to top
+
+          historyList.prepend(historyEl);
+          while (historyList.children.length > MAX_HISTORY_ITEMS) {
+            historyList.lastElementChild.remove();
+          }
         }
       }
     } catch (err) {
       addTask(`エラー (${fileName}): ${err}`);
     } finally {
-      // Remove progress bar
+      activeProgressBars.delete(taskId);
       progressEl.remove();
-      
+
       activeCount--;
       processedInCurrentBatch++;
       updateQueueUI();
-      
+
       // Check if entire batch is done
       if (activeCount === 0 && processQueue.length === 0 && totalInCurrentBatch > 0) {
         const elapsedSeconds = (Date.now() - batchStartTime) / 1000;
-        const minFiles = parseInt(notifyMinFilesInput.value, 10) || 3;
-        const minTime = parseInt(notifyMinTimeInput.value, 10) || 30;
+        const minFiles = clampInt(notifyMinFilesInput.value, 3, 1);
+        const minTime = clampInt(notifyMinTimeInput.value, 30, 1);
 
         if (totalInCurrentBatch >= minFiles || elapsedSeconds >= minTime) {
-          checkAndSendNotification(`すべての解凍処理が完了しました (${totalInCurrentBatch}件 / ${Math.round(elapsedSeconds)}秒)`);
+          checkAndSendNotification(
+            `すべての解凍処理が完了しました (${totalInCurrentBatch}件 / ${Math.round(elapsedSeconds)}秒)`
+          );
         }
-        
+
         totalInCurrentBatch = 0;
         processedInCurrentBatch = 0;
         batchStartTime = 0;
         updateQueueUI();
-        addTask("すべての解凍タスクが完了しました。");
+        addTask('すべての解凍タスクが完了しました。');
       } else {
         pumpQueue();
       }
@@ -290,15 +340,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Listen to progress updates
   listen('extract-progress', (event) => {
-    const { zip_filename, file, current, total } = event.payload;
-    const safeId = "progress-" + btoa(unescape(encodeURIComponent(zip_filename))).replace(/[^a-zA-Z0-9]/g, '');
-    const progressEl = document.getElementById(safeId);
-    
+    const { task_id: taskId, file, current, total } = event.payload;
+    const progressEl = activeProgressBars.get(taskId);
+
     if (progressEl) {
-      const percent = Math.floor((current / total) * 100);
+      const percent = total > 0 ? Math.min(100, Math.floor((current / total) * 100)) : 0;
       progressEl.querySelector('.p-bar').style.width = `${percent}%`;
-      progressEl.querySelector('.p-percent').innerText = `${percent}%`;
-      progressEl.querySelector('.p-filename').innerText = file;
+      progressEl.querySelector('.p-percent').textContent = `${percent}%`;
+      progressEl.querySelector('.p-filename').textContent = file;
     }
   });
 
@@ -311,13 +360,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   function addTask(message) {
-    if (taskQueue.children.length === 1 && taskQueue.children[0].innerText.includes('タスクはありません')) {
-      taskQueue.innerHTML = '';
+    if (taskQueue.children.length === 1 && taskQueue.children[0].textContent.includes('タスクはありません')) {
+      taskQueue.replaceChildren();
     }
-    
+
     const taskEl = document.createElement('div');
     taskEl.className = 'task-item';
-    taskEl.innerText = message;
+    taskEl.textContent = message;
     taskQueue.prepend(taskEl);
+    while (taskQueue.children.length > MAX_LOG_ITEMS) {
+      taskQueue.lastElementChild.remove();
+    }
   }
 });

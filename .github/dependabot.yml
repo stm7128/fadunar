@@ -6,6 +6,9 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # Keep @tauri-apps/* synchronized manually with Cargo tauri crates
+      - dependency-name: "@tauri-apps/*"
 
   - package-ecosystem: "cargo"
     directory: "/src-tauri"
@@ -14,8 +17,14 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     ignore:
-      # Ignore Tauri dependencies to prevent accidental breaking updates 
-      # since Tauri v2 is still heavily evolving, you want to update it manually.
+      # Keep Tauri crates synchronized manually with @tauri-apps/* packages
       - dependency-name: "tauri"
       - dependency-name: "tauri-build"
       - dependency-name: "tauri-plugin-*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"

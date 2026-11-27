@@ -6,7 +6,10 @@ on:
       - main
     paths-ignore:
       - 'README.md'
+      - 'LICENSE'
       - '.gitignore'
+      - '.github/dependabot.yml'
+      - '.github/workflows/ci.yml'
 
 jobs:
   release:
@@ -21,13 +24,12 @@ jobs:
         shell: pwsh
         run: |
           # Create a valid semver CalVer that respects Windows limits (Major/Minor <= 255, Patch <= 65535)
-          # Format: (Year-2020).(Month).(Day * 1000 + RunNumber)
-          $year = (Get-Date).Year - 2020
-          $month = (Get-Date).Month
-          $day = (Get-Date).Day
-          $run = [int]$env:GITHUB_RUN_NUMBER
-          $patch = ($day * 1000) + $run
-          $version = "$year.$month.$patch"
+          # Format: ((Year - 2020) * 12 + Month).(Day).(GITHUB_RUN_NUMBER)
+          $now = Get-Date
+          $major = (($now.Year - 2020) * 12) + $now.Month
+          $minor = $now.Day
+          $patch = [int]$env:GITHUB_RUN_NUMBER
+          $version = "$major.$minor.$patch"
           echo "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: setup node
@@ -45,7 +47,7 @@ jobs:
           workspaces: 'src-tauri -> target'
 
       - name: install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Update version in files
         shell: pwsh
@@ -61,7 +63,8 @@ jobs:
           $conf | ConvertTo-Json -Depth 10 | Set-Content src-tauri/tauri.conf.json
           # Cargo.toml - replace only the package version (first occurrence)
           $content = Get-Content src-tauri/Cargo.toml -Raw
-          $content = $content -replace '(?m)^(version = ")[^"]*"', "`${1}${version}`""
+          $regex = [regex]'(?m)^(version = ")[^"]*"'
+          $content = $regex.Replace($content, "`${1}${version}`"", 1)
           Set-Content src-tauri/Cargo.toml $content
 
       - name: build and release
