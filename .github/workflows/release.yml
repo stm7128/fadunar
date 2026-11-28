@@ -33,7 +33,7 @@ jobs:
           echo "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: 'npm'
